@@ -75,7 +75,15 @@ class PortConfigs:
         proto_ports = dict()
         if svc.metadata.annotations.get(port_provider.auto_annotation_key):
             for port_config in svc.spec.ports:
-                self.add_port_from_data(f'{port_config.port}:{port_config.port}', port_config.protocol, svc)
+                proto = port_config.protocol
+
+                if proto not in port_provider.protos:
+                    if "ANY" in port_provider.protos:
+                        proto = "ANY"
+                    elif "ALL" in port_provider.protos:
+                        proto = "ALL"
+
+                self.add_port_from_data(f'{port_config.port}:{port_config.port}', proto, svc)
         else:
             for proto in port_provider.protos:
                 proto_ports[proto] = svc.metadata.annotations.get(port_provider.annotation_keys[proto])

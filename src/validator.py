@@ -35,16 +35,28 @@ def validate():
                 for port_config in svc["spec"]["ports"]:
                     proto = port_config["protocol"]
                     port = port_config["port"]
-                    external_ports = CONFIGS.get_ports_by_proto(proto)
-                    for ep in external_ports:
-                        if is_range(ep):
-                            if in_range(port, ep):
-                                allowed = False
-                                reason = "Port %s intersects range %s." % (port, ep)
+
+                    if proto not in port_provider.protos:
+                        if "ANY" in port_provider.protos:
+                            proto = "ANY"
+                        elif "ALL" in port_provider.protos:
+                            proto = "ALL"
                         else:
-                            if int(ep) == int(port):
-                                allowed = False
-                                reason = "Port %s intersects with port %s." % (port, ep)
+                            proto = None
+                            allowed = False
+                            reason = "Protocol is not supported by provider."
+
+                    if proto is not None:
+                        external_ports = CONFIGS.get_ports_by_proto(proto)
+                        for ep in external_ports:
+                            if is_range(ep):
+                                if in_range(port, ep):
+                                    allowed = False
+                                    reason = "Port %s intersects range %s." % (port, ep)
+                            else:
+                                if int(ep) == int(port):
+                                    allowed = False
+                                    reason = "Port %s intersects with port %s." % (port, ep)
             else:
                 for proto in port_provider.protos:
                     c_annotation = port_provider.annotation_keys[proto]
