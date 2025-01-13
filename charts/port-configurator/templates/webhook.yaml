@@ -12,7 +12,7 @@ webhooks:
 - name: {{ include "port-configurator.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
   objectSelector:
     matchLabels:
-        {{ $svc_label_key }}: {{ $svc_label_value }}
+        {{ $svc_label_key }}: {{ $svc_label_value | quote }}
   rules:
   - operations: [ "CREATE", "UPDATE" ]
     apiGroups: [ "" ]
