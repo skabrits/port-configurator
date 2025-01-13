@@ -88,12 +88,16 @@ class PortConfigs:
     def add_port_from_data(self, port, proto, svc):
         if port_provider.requires_ip:
             try:
-                pc = PortConfig(port, proto, svc.metadata.namespace, svc.metadata.name,
-                                svc.status.loadBalancer.ingress[0].ip)
+                lb_ip = svc.status.load_balancer.ingress[0].ip
+
+                if lb_ip is None:
+                    raise AttributeError
+
+                pc = PortConfig(port, proto, svc.metadata.namespace, svc.metadata.name, lb_ip)
             except AttributeError:
                 try:
                     pc = PortConfig(port, proto, svc.metadata.namespace, svc.metadata.name,
-                                    socket.gethostbyname(svc.status.loadBalancer.ingress[0].hostname))
+                                    socket.gethostbyname(svc.status.load_balancer.ingress[0].hostname))
                 except socket.gaierror:
                     pc = PortConfig(port, proto, svc.metadata.namespace, svc.metadata.name, "192.168.0.254")
                 else:
