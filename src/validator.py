@@ -41,42 +41,44 @@ def validate():
                             reason = "Port %s intersects with port %s." % (port, ep)
         else:
             for proto in port_provider.protos:
-                ports = ports_annotations[port_provider.annotation_keys[proto]]
-                external_ports = CONFIGS.get_ports_by_proto(proto)
-                for port_binding in ports.split(","):
-                    port = port_binding.split(":")[0]
+                c_annotation = port_provider.annotation_keys[proto]
+                if c_annotation in ports_annotations.keys():
+                    ports = ports_annotations[c_annotation]
+                    external_ports = CONFIGS.get_ports_by_proto(proto)
+                    for port_binding in ports.split(","):
+                        port = port_binding.split(":")[0]
 
-                    if is_range(port):
-                        if not port_provider.allows_port_range:
-                            allowed = False
-                            reason = "Selected provider does not allow using port ranges."
-                        elif not is_valid_range(port):
-                            allowed = False
-                            reason = "Range %s is incorrect - first value must be less than second." % port
+                        if is_range(port):
+                            if not port_provider.allows_port_range:
+                                allowed = False
+                                reason = "Selected provider does not allow using port ranges."
+                            elif not is_valid_range(port):
+                                allowed = False
+                                reason = "Range %s is incorrect - first value must be less than second." % port
+                            else:
+                                for ep in external_ports:
+                                    if is_range(ep):
+                                        if intersect(ep, port):
+                                            allowed = False
+                                            reason = "Range %s intersects with range %s." % (port, ep)
+                                    else:
+                                        if in_range(ep, port):
+                                            allowed = False
+                                            reason = "Range %s intersects with port %s." % (port, ep)
                         else:
-                            for ep in external_ports:
-                                if is_range(ep):
-                                    if intersect(ep, port):
-                                        allowed = False
-                                        reason = "Range %s intersects with range %s." % (port, ep)
-                                else:
-                                    if in_range(ep, port):
-                                        allowed = False
-                                        reason = "Range %s intersects with port %s." % (port, ep)
-                    else:
-                        if not is_valid_port(port):
-                            allowed = False
-                            reason = "Port %s is incorrect - must be integer." % port
-                        else:
-                            for ep in external_ports:
-                                if is_range(ep):
-                                    if in_range(port, ep):
-                                        allowed = False
-                                        reason = "Port %s intersects range %s." % (port, ep)
-                                else:
-                                    if int(ep) == int(port):
-                                        allowed = False
-                                        reason = "Port %s intersects with port %s." % (port, ep)
+                            if not is_valid_port(port):
+                                allowed = False
+                                reason = "Port %s is incorrect - must be integer." % port
+                            else:
+                                for ep in external_ports:
+                                    if is_range(ep):
+                                        if in_range(port, ep):
+                                            allowed = False
+                                            reason = "Port %s intersects range %s." % (port, ep)
+                                    else:
+                                        if int(ep) == int(port):
+                                            allowed = False
+                                            reason = "Port %s intersects with port %s." % (port, ep)
     except KeyError as e:
         allowed = False
         reason = "Object missing key, which produces error %s." % e
