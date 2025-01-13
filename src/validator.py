@@ -1,10 +1,14 @@
 from configs import port_provider
 from main import CONFIGS
 from flask import Flask, jsonify, request
-import socket
+import logging
 import http
+import sys
+import os
 
 app = Flask(__name__)
+app.logger.addHandler(logging.StreamHandler(sys.stdout))
+app.logger.setLevel(os.getenv('LOG_LEVEL', 'INFO'))
 
 
 @app.route("/validate", methods=["POST"])
@@ -42,12 +46,13 @@ def validate():
         else:
             for proto in port_provider.protos:
                 c_annotation = port_provider.annotation_keys[proto]
+                app.logger.debug(f"current annotation is {c_annotation}, service annotations are {ports_annotations.keys()}")
                 if c_annotation in ports_annotations.keys():
                     ports = ports_annotations[c_annotation]
                     external_ports = CONFIGS.get_ports_by_proto(proto)
                     for port_binding in ports.split(","):
                         port = port_binding.split(":")[0]
-
+                        app.logger.debug(f"processing port {port}")
                         if is_range(port):
                             if not port_provider.allows_port_range:
                                 allowed = False
@@ -57,6 +62,7 @@ def validate():
                                 reason = "Range %s is incorrect - first value must be less than second." % port
                             else:
                                 for ep in external_ports:
+                                    app.logger.debug(f"comparing port range to port {ep}")
                                     if is_range(ep):
                                         if intersect(ep, port):
                                             allowed = False
@@ -71,6 +77,7 @@ def validate():
                                 reason = "Port %s is incorrect - must be integer." % port
                             else:
                                 for ep in external_ports:
+                                    app.logger.debug(f"comparing port to port {ep}")
                                     if is_range(ep):
                                         if in_range(port, ep):
                                             allowed = False
