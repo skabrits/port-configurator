@@ -17,75 +17,77 @@ def validate():
     reason = "Service passed validation."
 
     try:
-        svc = request.json["request"]["object"]
-        ports_annotations = svc["metadata"]["annotations"]
+        request_data = request.json["request"]
+        if request_data["operation"] != "DELETE":
+            svc = request_data["object"]
+            ports_annotations = svc["metadata"]["annotations"]
 
-        if port_provider.requires_ip:
-            try:
-                if svc["spec"]["type"] != "LoadBalancer":
+            if port_provider.requires_ip:
+                try:
+                    if svc["spec"]["type"] != "LoadBalancer":
+                        allowed = False
+                        reason = "Service must be of type LoadBalancer."
+                except KeyError:
                     allowed = False
-                    reason = "Service must be of type LoadBalancer."
-            except KeyError:
-                allowed = False
-                reason = "No type provided for service."
+                    reason = "No type provided for service."
 
-        if port_provider.auto_annotation_key in ports_annotations.keys():
-            for port_config in svc["spec"]["ports"]:
-                proto = port_config["protocol"]
-                port = port_config["port"]
-                external_ports = CONFIGS.get_ports_by_proto(proto)
-                for ep in external_ports:
-                    if is_range(ep):
-                        if in_range(port, ep):
-                            allowed = False
-                            reason = "Port %s intersects range %s." % (port, ep)
-                    else:
-                        if int(ep) == int(port):
-                            allowed = False
-                            reason = "Port %s intersects with port %s." % (port, ep)
-        else:
-            for proto in port_provider.protos:
-                c_annotation = port_provider.annotation_keys[proto]
-                app.logger.debug(f"current annotation is {c_annotation}, service annotations are {ports_annotations.keys()}")
-                if c_annotation in ports_annotations.keys():
-                    ports = ports_annotations[c_annotation]
+            if port_provider.auto_annotation_key in ports_annotations.keys():
+                for port_config in svc["spec"]["ports"]:
+                    proto = port_config["protocol"]
+                    port = port_config["port"]
                     external_ports = CONFIGS.get_ports_by_proto(proto)
-                    for port_binding in ports.split(","):
-                        port = port_binding.split(":")[0]
-                        app.logger.debug(f"processing port {port}")
-                        if is_range(port):
-                            if not port_provider.allows_port_range:
+                    for ep in external_ports:
+                        if is_range(ep):
+                            if in_range(port, ep):
                                 allowed = False
-                                reason = "Selected provider does not allow using port ranges."
-                            elif not is_valid_range(port):
-                                allowed = False
-                                reason = "Range %s is incorrect - first value must be less than second." % port
-                            else:
-                                for ep in external_ports:
-                                    app.logger.debug(f"comparing port range to port {ep}")
-                                    if is_range(ep):
-                                        if intersect(ep, port):
-                                            allowed = False
-                                            reason = "Range %s intersects with range %s." % (port, ep)
-                                    else:
-                                        if in_range(ep, port):
-                                            allowed = False
-                                            reason = "Range %s intersects with port %s." % (port, ep)
+                                reason = "Port %s intersects range %s." % (port, ep)
                         else:
-                            if not is_valid_port(port):
+                            if int(ep) == int(port):
                                 allowed = False
-                                reason = "Port %s is incorrect - must be integer." % port
+                                reason = "Port %s intersects with port %s." % (port, ep)
+            else:
+                for proto in port_provider.protos:
+                    c_annotation = port_provider.annotation_keys[proto]
+                    app.logger.debug(f"current annotation is {c_annotation}, service annotations are {ports_annotations.keys()}")
+                    if c_annotation in ports_annotations.keys():
+                        ports = ports_annotations[c_annotation]
+                        external_ports = CONFIGS.get_ports_by_proto(proto)
+                        for port_binding in ports.split(","):
+                            port = port_binding.split(":")[0]
+                            app.logger.debug(f"processing port {port}")
+                            if is_range(port):
+                                if not port_provider.allows_port_range:
+                                    allowed = False
+                                    reason = "Selected provider does not allow using port ranges."
+                                elif not is_valid_range(port):
+                                    allowed = False
+                                    reason = "Range %s is incorrect - first value must be less than second." % port
+                                else:
+                                    for ep in external_ports:
+                                        app.logger.debug(f"comparing port range to port {ep}")
+                                        if is_range(ep):
+                                            if intersect(ep, port):
+                                                allowed = False
+                                                reason = "Range %s intersects with range %s." % (port, ep)
+                                        else:
+                                            if in_range(ep, port):
+                                                allowed = False
+                                                reason = "Range %s intersects with port %s." % (port, ep)
                             else:
-                                for ep in external_ports:
-                                    app.logger.debug(f"comparing port to port {ep}")
-                                    if is_range(ep):
-                                        if in_range(port, ep):
-                                            allowed = False
-                                            reason = "Port %s intersects range %s." % (port, ep)
-                                    else:
-                                        if int(ep) == int(port):
-                                            allowed = False
-                                            reason = "Port %s intersects with port %s." % (port, ep)
+                                if not is_valid_port(port):
+                                    allowed = False
+                                    reason = "Port %s is incorrect - must be integer." % port
+                                else:
+                                    for ep in external_ports:
+                                        app.logger.debug(f"comparing port to port {ep}")
+                                        if is_range(ep):
+                                            if in_range(port, ep):
+                                                allowed = False
+                                                reason = "Port %s intersects range %s." % (port, ep)
+                                        else:
+                                            if int(ep) == int(port):
+                                                allowed = False
+                                                reason = "Port %s intersects with port %s." % (port, ep)
     except KeyError as e:
         allowed = False
         reason = "Object missing key, which produces error %s." % e

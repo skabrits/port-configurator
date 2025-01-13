@@ -14,7 +14,7 @@ webhooks:
     matchLabels:
         {{ $svc_label_key }}: {{ $svc_label_value | quote }}
   rules:
-  - operations: [ "CREATE", "UPDATE" ]
+  - operations: [ "CREATE", "UPDATE", "DELETE" ]
     apiGroups: [ "" ]
     apiVersions: [ "v1" ]
     resources: [ "services" ]
