@@ -49,6 +49,9 @@ class PortConfigs:
     def get_ports_by_proto(self, proto):
         return [p.port.split(":")[0] for p in self.get_port_configs().values() if p.proto == proto]
 
+    def get_ports_by_proto_exclude_service(self, proto, service):
+        return [p.port.split(":")[0] for p in self.get_port_configs().values() if p.proto == proto and p.service != service]
+
     def add_from_pcs(self, pcs):
         for k in pcs.proto_port_configs.keys():
             self.proto_port_configs[k] |= pcs.proto_port_configs[k]

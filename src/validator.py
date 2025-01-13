@@ -47,7 +47,7 @@ def validate():
                             reason = "Protocol is not supported by provider."
 
                     if proto is not None:
-                        external_ports = CONFIGS.get_ports_by_proto(proto)
+                        external_ports = get_external_ports(CONFIGS, proto, request_data["operation"], svc["metadata"]["name"])
                         for ep in external_ports:
                             if is_range(ep):
                                 if in_range(port, ep):
@@ -63,7 +63,7 @@ def validate():
                     app.logger.debug(f"current annotation is {c_annotation}, service annotations are {ports_annotations.keys()}")
                     if c_annotation in ports_annotations.keys():
                         ports = ports_annotations[c_annotation]
-                        external_ports = CONFIGS.get_ports_by_proto(proto)
+                        external_ports = get_external_ports(CONFIGS, proto, request_data["operation"], svc["metadata"]["name"])
                         for port_binding in ports.split(","):
                             port = port_binding.split(":")[0]
                             app.logger.debug(f"processing port {port}")
@@ -163,3 +163,10 @@ def in_range(port, port_range):
     p = int(port)
     p_0, p_1 = parse_range(port_range)
     return p_0 <= p <= p_1
+
+
+def get_external_ports(CONFIGS, proto, operation, service):
+    if operation == "CREATE":
+        return CONFIGS.get_ports_by_proto(proto)
+    elif operation == "UPDATE":
+        return CONFIGS.get_ports_by_proto_exclude_service(proto, service)
