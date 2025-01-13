@@ -61,11 +61,11 @@ class PortConfigs:
                 if config_map and config_map.data:
                     for key, value in config_map.data.items():
                         if port_provider.requires_ip:
-                                reg_str = "([a-z-]*)/([a-z-]*):([0-9]*)#([0-9.]*)"
+                                reg_str = "([a-z0-9-]*)/([a-z0-9-]*):([0-9]*)#([0-9.]*)"
                                 res = re.match(reg_str, value).groups()
                                 self.add_port_config(PortConfig(f'{key}:{res[2]}', proto, res[0], res[1], ip=res[3]))
                         else:
-                            reg_str = "([a-z-]*)/([a-z-]*):([0-9]*)"
+                            reg_str = "([a-z0-9-]*)/([a-z0-9-]*):([0-9]*)"
                             res = re.match(reg_str, value).groups()
                             self.add_port_config(PortConfig(f'{key}:{res[2]}', proto, res[0], res[1]))
             except ks.client.exceptions.ApiException as e:
