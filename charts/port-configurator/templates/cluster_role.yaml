@@ -1,0 +1,75 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: access-svc-{{ include "port-configurator.fullname" . }}
+  labels:
+    {{- include "port-configurator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: ["kyverno.io"]
+    resources: ["clusterpolicies"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: access-provider-{{ include "port-configurator.fullname" . }}
+  namespace: {{ .Values.provider.namespace }}
+  labels:
+    {{- include "port-configurator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["", "apps"]
+    resources: ["services", "deployments", "configmaps"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: access-svc-{{ include "port-configurator.fullname" . }}-rb
+  labels:
+    {{- include "port-configurator.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: port-configurator-{{ include "port-configurator.fullname" . }}-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: access-svc-{{ include "port-configurator.fullname" . }}
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: access-provider-{{ include "port-configurator.fullname" . }}-rb
+  namespace: {{ .Values.provider.namespace }}
+  labels:
+    {{- include "port-configurator.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: port-configurator-{{ include "port-configurator.fullname" . }}-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: access-provider-{{ include "port-configurator.fullname" . }}
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: port-configurator-{{ include "port-configurator.fullname" . }}-sa
+  labels:
+    {{- include "port-configurator.labels" . | nindent 4 }}
+secrets:
+  - name: port-configurator-{{ include "port-configurator.fullname" . }}-secret
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: port-configurator-{{ include "port-configurator.fullname" . }}-secret
+  labels:
+    {{- include "port-configurator.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/service-account.name: port-configurator-{{ include "port-configurator.fullname" . }}-sa
+type: kubernetes.io/service-account-token

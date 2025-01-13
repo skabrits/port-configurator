@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: environment-cm-{{ include "port-configurator.fullname" . }}
+  labels:
+    {{- include "port-configurator.labels" . | nindent 4 }}
+data:
+  PORT_PROVIDER_NAMESPACE: {{ .Values.provider.namespace }}
+  PORT_PROVIDER: {{ .Values.provider.name }}
+  {{- with .Values.envs }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}

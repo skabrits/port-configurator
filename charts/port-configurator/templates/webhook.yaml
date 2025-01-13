@@ -1,0 +1,47 @@
+{{- $provider_base_name := (index ( include "port-configurator.BASE_NAMES" . | fromJson ) .Values.provider.name ) -}}
+{{- $svc_label := .Values.envs.LABEL_SELECTOR | default ( printf "%s=%s" ( .Values.envs.BASE_NAME | default $provider_base_name ) "1" ) -}}
+{{- $svc_label_key := ( split "=" $svc_label )._0 -}}
+{{- $svc_label_value := ( split "=" $svc_label )._1 -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "port-configurator.fullname" . }}-webhook
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "port-configurator.fullname" . }}-webhook-certificate
+webhooks:
+- name: {{ include "port-configurator.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
+  objectSelector:
+    matchLabels:
+        {{ $svc_label_key }}: {{ $svc_label_value }}
+  rules:
+  - operations: [ "CREATE", "UPDATE" ]
+    apiGroups: [ "" ]
+    apiVersions: [ "v1" ]
+    resources: [ "services" ]
+  admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "port-configurator.fullname" . }}-webhook
+      namespace: {{ .Release.Namespace }}
+      path: /validate
+      port: 443
+  sideEffects: None
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "port-configurator.fullname" . }}-webhook-certificate
+spec:
+  secretName: {{ include "port-configurator.fullname" . }}-webhook-certificate-secret
+  dnsNames:
+  - {{ include "port-configurator.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
+  issuerRef:
+    name: {{ include "port-configurator.fullname" . }}-webhook-selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "port-configurator.fullname" . }}-webhook-selfsigned
+spec:
+  selfSigned: {}

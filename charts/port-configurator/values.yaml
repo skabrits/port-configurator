@@ -1,0 +1,53 @@
+# Default values for port-configurator.
+# This is a YAML-formatted file.
+
+provider:
+  name: Nginx
+  namespace: ingress-nginx
+
+# Supported providers:
+#
+# | Provider            | Protocols |  Class   |  Default BASE_NAME  | Notes                                                                                      |
+# |:--------------------|:---------:|:--------:|:-------------------:|:-------------------------------------------------------------------------------------------|
+# | Ingress-Nginx       | TCP, UDP  |  Nginx   | ingress-nginx-ports | port-forwarding includes managing configmaps, deployment's and service's ports for ingress |
+# | TP-link Archer C80  |    ANY    |  Router  |    tplink-ports     | port-forwarding is done via web interface (Selenium)                                       |
+
+image:
+  repository: skabrits/port-configurator
+  pullPolicy: IfNotPresent
+  tag: "0.1.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+envs: {}
+  # BASE_NAME: ingress-nginx-ports
+  # INGRESS_DEPLOYMENT: my-release-ingress-nginx-controller
+
+resources: {}
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
