@@ -86,6 +86,8 @@ def validate():
 
     return jsonify(
         {
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
             "response": {
                 "allowed": allowed,
                 "uid": request.json["request"]["uid"],
