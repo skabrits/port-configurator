@@ -158,7 +158,7 @@ class Router (PortProvider):
             self.delete_port(n)
 
         for k in added_ports:
-            self.add_port(f'{NEW_CONFIGS[k].service.lower()}-{NEW_CONFIGS[k].proto.lower()}-{NEW_CONFIGS[k].port.split(":")[0]}'[-32:], NEW_CONFIGS[k].ip, NEW_CONFIGS[k].port.split(":")[0], int_p if (int_p := NEW_CONFIGS[k].port.split(":")[1]) != "" else None)
+            self.add_port("K" + f'{NEW_CONFIGS[k].service.lower()}-{NEW_CONFIGS[k].proto.lower()}-{NEW_CONFIGS[k].port.split(":")[0]}'[-27:], NEW_CONFIGS[k].ip, NEW_CONFIGS[k].port.split(":")[0], int_p if (int_p := NEW_CONFIGS[k].port.split(":")[1]) != "" else None)
 
 
 class Nginx (PortProvider):
