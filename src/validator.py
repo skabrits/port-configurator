@@ -1,4 +1,4 @@
-from configs import port_provider
+from configs import port_provider, lock_file
 from main import CONFIGS
 from flask import Flask, jsonify, request
 import logging
@@ -92,6 +92,10 @@ def validate():
     except Exception as e:
         allowed = False
         reason = "Object has invalid properties, which produces error %s." % e
+
+    if lock_file.is_locked():
+        allowed = False
+        reason = "Another port-forwarding is in progress."
 
     return jsonify(
         {

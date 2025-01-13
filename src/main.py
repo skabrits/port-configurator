@@ -1,4 +1,4 @@
-from configs import port_provider
+from configs import port_provider, lock_file
 from dataclasses import dataclass
 import kubernetes as ks
 import socket
@@ -152,6 +152,7 @@ def setup():
 
 
 def fetch_service(svc):
+    lock_file.lock()
     global CONFIGS
     TMP_CONFIGS = PortConfigs()
     TMP_CONFIGS.add_from_svc(svc)
@@ -160,15 +161,18 @@ def fetch_service(svc):
     port_provider.patch_ports(new_port_configs, old_port_configs)
     CONFIGS.add_from_pcs(TMP_CONFIGS)
     CONFIGS.generate_config_maps()
+    lock_file.unlock()
 
 
 def delete_service(svc):
+    lock_file.lock()
     global CONFIGS
     old_port_configs = CONFIGS.get_ports_by_service(svc.metadata.name)
     new_port_configs = dict()
     port_provider.patch_ports(new_port_configs, old_port_configs)
     CONFIGS.remove_ports_by_service(svc.metadata.name)
     CONFIGS.generate_config_maps()
+    lock_file.unlock()
 
 
 def monitor():
@@ -185,7 +189,9 @@ def monitor():
 
 
 def main():
+    lock_file.lock()
     setup()
+    lock_file.unlock()
     monitor()
 
 
