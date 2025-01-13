@@ -19,7 +19,7 @@ class LockFile:
             f.write("0")
 
     def is_locked(self):
-        with open(self.path, 'w') as f:
+        with open(self.path, 'r') as f:
             res = int(f.read()) == 1
         return res
 
