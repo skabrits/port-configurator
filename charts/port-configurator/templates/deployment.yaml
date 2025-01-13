@@ -43,12 +43,13 @@ spec:
               port: 443
             initialDelaySeconds: 3
             periodSeconds: 5
-            livenessProbe:
-              httpGet:
-                path: /health
-                scheme: HTTPS
-                port: 443
-              initialDelaySeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              scheme: HTTPS
+              port: 443
+            initialDelaySeconds: 3
+            periodSeconds: 5
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           envFrom:
