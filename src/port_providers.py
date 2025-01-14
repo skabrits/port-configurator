@@ -6,6 +6,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 import kubernetes as ks
+from time import sleep
 import os
 
 
@@ -148,8 +149,13 @@ class Router (PortProvider):
     def patch_ports(self, new_port_configs, old_port_configs):
         redundant_ports = old_port_configs.keys() - new_port_configs.keys()
         added_ports = new_port_configs.keys() - old_port_configs.keys()
-
-        self.patch_router_ports(redundant_ports, added_ports, new_port_configs, old_port_configs)
+        for _ in range(5):
+            try:
+                self.patch_router_ports(redundant_ports, added_ports, new_port_configs, old_port_configs)
+                break
+            except Exception:
+                sleep(10)
+                continue
 
     def patch_router_ports(self, redundant_ports, added_ports, NEW_CONFIGS, CONFIGS):
         redundant_names = [self.prepare_name(f'{CONFIGS[k].service.lower()}-{CONFIGS[k].proto.lower()}-{CONFIGS[k].port.split(":")[0]}') for k in redundant_ports]
@@ -178,7 +184,14 @@ class Nginx (PortProvider):
         added_ports = new_port_configs.keys() - old_port_configs.keys()
 
         self.patch_ingress_deployment(redundant_ports, added_ports, new_port_configs, old_port_configs)
-        self.patch_ingress_service(redundant_ports, added_ports, new_port_configs, old_port_configs)
+        for i in range(5):
+            try:
+                self.patch_ingress_service(redundant_ports, added_ports, new_port_configs, old_port_configs)
+            except Exception as e:
+                if i == 4:
+                    raise e
+                sleep(10)
+                continue
 
     def patch_ingress_deployment(self, redundant_ports, added_ports, NEW_CONFIGS, CONFIGS):
         v1_apps = ks.client.AppsV1Api()
