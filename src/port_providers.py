@@ -41,7 +41,7 @@ class Router (PortProvider):
         super().__init__(protos=["ANY"])
         self.requires_ip = True
         self.allows_port_range = True
-        self.delay = 20
+        self.delay = 5
         self.opts = FirefoxOptions()
         self.opts.add_argument("--headless")
         self.driver = None
@@ -170,8 +170,6 @@ class Router (PortProvider):
         self.load_url("/#portForwarding")
 
         self.login()
-
-        print(ports)
 
         for service_name in ports:
 

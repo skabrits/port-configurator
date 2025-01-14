@@ -174,6 +174,7 @@ def fetch_service(svc):
     old_port_configs = CONFIGS.get_ports_by_service(svc.metadata.name)
     new_port_configs = TMP_CONFIGS.get_port_configs()
     port_provider.patch_ports(new_port_configs, old_port_configs)
+    CONFIGS.remove_ports_by_service(svc.metadata.name)
     CONFIGS.add_from_pcs(TMP_CONFIGS)
     CONFIGS.generate_config_maps()
     lock_file.unlock()
