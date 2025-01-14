@@ -187,6 +187,7 @@ class Nginx (PortProvider):
         for i in range(5):
             try:
                 self.patch_ingress_service(redundant_ports, added_ports, new_port_configs, old_port_configs)
+                break
             except Exception as e:
                 if i == 4:
                     raise e
