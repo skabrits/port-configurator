@@ -171,6 +171,8 @@ class Router (PortProvider):
 
         self.login()
 
+        print(ports)
+
         for service_name in ports:
 
             port_element = self.wait_for_object(By.XPATH, f"//*[td/div/div = '{service_name}']")
@@ -197,10 +199,10 @@ class Router (PortProvider):
         self.execute_task(self.__delete_port, service_name)
 
     def add_ports(self, ports):
-        self.execute_task(self.__add_port, ports)
+        self.execute_task(self.__add_ports, ports)
 
     def delete_ports(self, ports):
-        self.execute_task(self.__delete_port, ports)
+        self.execute_task(self.__delete_ports, ports)
 
     def patch_ports(self, new_port_configs, old_port_configs):
         redundant_ports = old_port_configs.keys() - new_port_configs.keys()
