@@ -41,7 +41,7 @@ class Router (PortProvider):
         super().__init__(protos=["ANY"])
         self.requires_ip = True
         self.allows_port_range = True
-        self.delay = 3
+        self.delay = 20
         self.opts = FirefoxOptions()
         self.opts.add_argument("--headless")
         self.driver = None
@@ -62,7 +62,7 @@ class Router (PortProvider):
         try:
             return WebDriverWait(self.driver, self.delay).until(EC.presence_of_element_located((object_type, object_value)))
         except TimeoutException:
-            print("Loading took too much time!")
+            print(f"Loading took too much time! Element {object_type} - {object_value}.")
             return None
 
     def get_element_by_custom_attribute(self, attribute_name, attribute_value, html_element=None):
@@ -140,33 +140,78 @@ class Router (PortProvider):
 
         self.logout()
 
+    def __add_ports(self, ports):
+        self.load_url("/#portForwarding")
+
+        self.login()
+
+        for service_name, service_ip, service_external_port, service_internal_port in ports:
+
+            self.click_object(self.get_element_by_classes('operation-btn btn-add fst lst'))
+
+            elem = self.get_element_by_custom_attribute("label-field", '{PORT_FORWARDING.SERVICE_NAME}').find_element(By.CSS_SELECTOR, "input[type='text']")
+            self.set_value(service_name, elem)
+
+            elem = self.get_element_by_custom_attribute("label-field", '{PORT_FORWARDING.DEVICE_IP_ADDRESS}').find_element(By.CSS_SELECTOR, "input[type='text']")
+            self.set_value(service_ip, elem)
+
+            elem = self.get_element_by_custom_attribute("label-field", '{PORT_FORWARDING.EXTERNAL_PORT}').find_element(By.CSS_SELECTOR, "input[type='text']")
+            self.set_value(service_external_port, elem)
+
+            if service_internal_port is not None:
+                elem = self.get_element_by_custom_attribute("label-field", '{PORT_FORWARDING.INTERNAL_PORT}').find_element(By.CSS_SELECTOR, "input[type='text']")
+                self.set_value(service_internal_port, elem)
+
+            self.click_object(self.wait_for_object(By.ID, "port-forwarding-grid-save-button").find_element(By.CLASS_NAME, "button-button"))
+
+        self.logout()
+
+    def __delete_ports(self, ports):
+        self.load_url("/#portForwarding")
+
+        self.login()
+
+        for service_name in ports:
+
+            port_element = self.wait_for_object(By.XPATH, f"//*[td/div/div = '{service_name}']")
+            no_loop = True
+            counter = 1
+            next_button = self.get_element_by_classes(f'paging-btn paging-btn-num pageing-btn-{counter}')
+            while port_element is None and no_loop:
+                if next_button is None:
+                    no_loop = False
+                    counter = 0
+                    next_button = self.get_element_by_classes(f'paging-btn paging-btn-num pageing-btn-{counter}')
+                self.click_object(next_button)
+                port_element = self.wait_for_object(By.XPATH, f"//*[td/div/div = '{service_name}']")
+                counter += 1
+            elem_key = port_element.get_attribute("data-key")
+            self.click_object(self.driver.find_element(By.CSS_SELECTOR, f"a[data-key='{elem_key}'][class*='btn-delete']"))
+
+        self.logout()
+
     def add_port(self, service_name, service_ip, service_external_port, service_internal_port=None):
         self.execute_task(self.__add_port, service_name, service_ip, service_external_port, service_internal_port)
 
     def delete_port(self, service_name):
         self.execute_task(self.__delete_port, service_name)
 
+    def add_ports(self, ports):
+        self.execute_task(self.__add_port, ports)
+
+    def delete_ports(self, ports):
+        self.execute_task(self.__delete_port, ports)
+
     def patch_ports(self, new_port_configs, old_port_configs):
         redundant_ports = old_port_configs.keys() - new_port_configs.keys()
         added_ports = new_port_configs.keys() - old_port_configs.keys()
-        for i in range(5):
-            try:
-                self.patch_router_ports(redundant_ports, added_ports, new_port_configs, old_port_configs)
-                break
-            except Exception as e:
-                if i == 4:
-                    raise e
-                sleep(10)
-                continue
+        self.patch_router_ports(redundant_ports, added_ports, new_port_configs, old_port_configs)
 
     def patch_router_ports(self, redundant_ports, added_ports, NEW_CONFIGS, CONFIGS):
         redundant_names = [self.prepare_name(f'{CONFIGS[k].service.lower()}-{CONFIGS[k].proto.lower()}-{CONFIGS[k].port.split(":")[0]}') for k in redundant_ports]
 
-        for n in redundant_names:
-            self.delete_port(n)
-
-        for k in added_ports:
-            self.add_port(self.prepare_name(f'{NEW_CONFIGS[k].service.lower()}-{NEW_CONFIGS[k].proto.lower()}-{NEW_CONFIGS[k].port.split(":")[0]}'), NEW_CONFIGS[k].ip, NEW_CONFIGS[k].port.split(":")[0], int_p if (int_p := NEW_CONFIGS[k].port.split(":")[1]) != "" else None)
+        self.delete_ports(redundant_names)
+        self.add_ports([(self.prepare_name(f'{NEW_CONFIGS[k].service.lower()}-{NEW_CONFIGS[k].proto.lower()}-{NEW_CONFIGS[k].port.split(":")[0]}'), NEW_CONFIGS[k].ip, NEW_CONFIGS[k].port.split(":")[0], int_p if (int_p := NEW_CONFIGS[k].port.split(":")[1]) != "" else None) for k in added_ports])
 
     @staticmethod
     def prepare_name(name):
