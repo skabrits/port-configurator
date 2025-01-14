@@ -149,11 +149,13 @@ class Router (PortProvider):
     def patch_ports(self, new_port_configs, old_port_configs):
         redundant_ports = old_port_configs.keys() - new_port_configs.keys()
         added_ports = new_port_configs.keys() - old_port_configs.keys()
-        for _ in range(5):
+        for i in range(5):
             try:
                 self.patch_router_ports(redundant_ports, added_ports, new_port_configs, old_port_configs)
                 break
-            except Exception:
+            except Exception as e:
+                if i == 4:
+                    raise e
                 sleep(10)
                 continue
 
