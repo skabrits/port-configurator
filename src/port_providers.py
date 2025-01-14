@@ -238,7 +238,7 @@ class Nginx (PortProvider):
                 "path": f'/spec/ports/-',
                 "value": {"name": f'{NEW_CONFIGS[k].proto.lower()}-{NEW_CONFIGS[k].port.split(":")[0]}',
                           "protocol": f'{NEW_CONFIGS[k].proto}', "port": int(NEW_CONFIGS[k].port.split(":")[0]),
-                          "targetPort": int(NEW_CONFIGS[k].port.split(":")[1])}
+                          "targetPort": int(NEW_CONFIGS[k].port.split(":")[0])}
             }
             for k in added_ports
         ]
