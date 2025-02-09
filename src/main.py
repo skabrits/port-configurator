@@ -193,15 +193,19 @@ def delete_service(svc):
 
 def monitor():
     v1 = ks.client.CoreV1Api()
-    w = ks.watch.Watch()
-    for event in w.stream(v1.list_service_for_all_namespaces, label_selector=port_provider.label_selector):
-        svc = event['object']
-        event_type = event['type']
+    while True:
+        w = ks.watch.Watch()
+        try:
+            for event in w.stream(v1.list_service_for_all_namespaces, label_selector=port_provider.label_selector):
+                svc = event['object']
+                event_type = event['type']
 
-        if event_type in ['ADDED', 'MODIFIED']:
-            fetch_service(svc)
-        elif event_type == 'DELETED':
-            delete_service(svc)
+                if event_type in ['ADDED', 'MODIFIED']:
+                    fetch_service(svc)
+                elif event_type == 'DELETED':
+                    delete_service(svc)
+        except Exception as e:
+            print(e)
 
 
 def main():
