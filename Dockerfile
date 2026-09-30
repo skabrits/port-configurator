@@ -11,6 +11,7 @@ WORKDIR /app
 COPY src .
 
 ENV PORT_PROVIDER="Nginx"
+ENV PYTHONUNBUFFERED=1
 EXPOSE 443
 
 CMD ["bash", "startup.sh"]

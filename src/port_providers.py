@@ -8,6 +8,12 @@ from selenium.common.exceptions import TimeoutException
 import kubernetes as ks
 from time import sleep
 import os
+import hashlib
+import ipaddress
+import json
+import re
+
+from kubernetes.client.exceptions import ApiException
 
 
 class PortProvider:
@@ -308,3 +314,1424 @@ class Nginx (PortProvider):
 
         if len(patch) > 0:
             v1.patch_namespaced_service(name=self.ingress_service, namespace=self.namespace, body=patch)
+
+
+class PodGateway(PortProvider):
+    """
+    MetalLB-backed L3/L4 gateway.
+
+    API:
+
+        labels:
+          pod-ports: "1"
+
+        annotations:
+          pod-ports.any-ports: "2222:22"
+          pod-ports.tcp-ports: "8443:443"
+          pod-ports.udp-ports: "51820:51820"
+
+    MetalLB owns a stable LAN IP.
+
+    The gateway pod itself has only the ordinary Kubernetes eth0.
+
+    An initContainer with NET_ADMIN installs nftables rules in the pod
+    network namespace and exits. The main container has no capabilities,
+    no Kubernetes API token and no listening userspace service.
+    """
+
+    CONFIG_HASH_ANNOTATION = "port-configurator.skabrits/config-sha256"
+
+    def __init__(self):
+        self.base_name = os.getenv("BASE_NAME", "pod-ports")
+        super().__init__(protos=["TCP", "UDP", "ANY"])
+
+        self.requires_ip = False
+        self.allows_port_range = True
+
+        if not self.namespace:
+            raise ValueError(
+                "PORT_PROVIDER_NAMESPACE must be set for PodGateway"
+            )
+
+        # Do not collide with Nginx/Router state ConfigMaps.
+        for proto in self.protos:
+            self.config_maps_name[proto] = os.getenv(
+                f"{proto}_CONFIG_MAP_NAME",
+                f"{self.base_name}-{proto.lower()}-services"
+            )
+
+        self.gateway_deployment = os.getenv(
+            "GATEWAY_DEPLOYMENT",
+            "pod-gateway"
+        )
+
+        self.gateway_config_prefix = os.getenv(
+            "GATEWAY_CONFIG_PREFIX",
+            "pod-gateway-rules"
+        )
+
+        self.gateway_service_prefix = os.getenv(
+            "GATEWAY_SERVICE_PREFIX",
+            "pod-gateway"
+        )
+
+        self.init_image = os.getenv(
+            "GATEWAY_INIT_IMAGE",
+            "skabrits/port-gateway-init:0.1.0"
+        )
+
+        self.pause_image = os.getenv(
+            "GATEWAY_PAUSE_IMAGE",
+            "registry.k8s.io/pause:3.10"
+        )
+
+        #
+        # MetalLB
+        #
+
+        self.load_balancer_ip = os.environ[
+            "GATEWAY_LOAD_BALANCER_IP"
+        ]
+
+        lb_ip = ipaddress.ip_address(self.load_balancer_ip)
+
+        if lb_ip.version != 4:
+            raise ValueError(
+                "PodGateway currently supports an IPv4 "
+                "MetalLB address only"
+            )
+
+        self.metallb_address_pool = os.getenv(
+            "GATEWAY_METALLB_ADDRESS_POOL"
+        )
+
+        self.shared_ip_key = os.getenv(
+            "GATEWAY_METALLB_SHARED_IP_KEY",
+            f"{self.namespace}-{self.gateway_deployment}"
+        )
+
+        self.external_traffic_policy = os.getenv(
+            "GATEWAY_EXTERNAL_TRAFFIC_POLICY",
+            "Local"
+        )
+
+        if self.external_traffic_policy not in ["Local", "Cluster"]:
+            raise ValueError(
+                "GATEWAY_EXTERNAL_TRAFFIC_POLICY must be "
+                "Local or Cluster"
+            )
+
+        self.allocate_node_ports = (
+            os.getenv(
+                "GATEWAY_ALLOCATE_NODE_PORTS",
+                "0"
+            ) == "1"
+        )
+
+        #
+        # Allowed external range.
+        #
+        # This should correspond to the one large static rule on Archer.
+        #
+
+        self.port_min = int(
+            os.getenv("GATEWAY_PORT_MIN", "1")
+        )
+
+        self.port_max = int(
+            os.getenv("GATEWAY_PORT_MAX", "65535")
+        )
+
+        if not 1 <= self.port_min <= self.port_max <= 65535:
+            raise ValueError(
+                f"Invalid gateway port range: "
+                f"{self.port_min}-{self.port_max}"
+            )
+
+        # Kubernetes Service cannot express a range as one ServicePort.
+        # A range must therefore be expanded.
+        self.max_service_ports = int(
+            os.getenv(
+                "GATEWAY_MAX_SERVICE_PORTS",
+                "1024"
+            )
+        )
+
+        #
+        # Deployment
+        #
+
+        self.strategy = os.getenv(
+            "GATEWAY_UPDATE_STRATEGY",
+            "RollingUpdate"
+        )
+
+        if self.strategy not in [
+            "Recreate",
+            "RollingUpdate",
+        ]:
+            raise ValueError(
+                "GATEWAY_UPDATE_STRATEGY must be "
+                "Recreate or RollingUpdate"
+            )
+
+        self.rollout_timeout = int(
+            os.getenv(
+                "GATEWAY_ROLLOUT_TIMEOUT",
+                "120"
+            )
+        )
+
+        self.node_selector = json.loads(
+            os.getenv(
+                "GATEWAY_NODE_SELECTOR",
+                "{}"
+            )
+        )
+
+        self.init_privileged = (
+            os.getenv(
+                "GATEWAY_INIT_PRIVILEGED",
+                "0"
+            ) == "1"
+        )
+
+        self.core = ks.client.CoreV1Api()
+        self.apps = ks.client.AppsV1Api()
+
+        #
+        # Full desired state.
+        #
+        # main.py sends only the affected Service after startup,
+        # so the provider has to maintain the complete state itself.
+        #
+
+        self.desired = {}
+        self.initialized = False
+
+    @staticmethod
+    def _config_key(pc):
+        return (
+            pc.proto.upper(),
+            pc.namespace,
+            pc.service,
+            pc.port,
+        )
+
+    def patch_ports(
+        self,
+        new_port_configs,
+        old_port_configs
+    ):
+        """
+        Reconcile complete gateway state.
+
+        On initial setup(), new_port_configs contains the full desired
+        configuration.
+
+        On later Service watch events it contains only the affected
+        Service, therefore self.desired is used to reconstruct the
+        complete state.
+        """
+
+        if not self.initialized:
+            previous = {
+                self._config_key(pc): pc
+                for pc in old_port_configs.values()
+            }
+
+            candidate = {
+                self._config_key(pc): pc
+                for pc in new_port_configs.values()
+            }
+
+        else:
+            previous = dict(self.desired)
+            candidate = dict(self.desired)
+
+            for pc in old_port_configs.values():
+                candidate.pop(
+                    self._config_key(pc),
+                    None
+                )
+
+            for pc in new_port_configs.values():
+                candidate[
+                    self._config_key(pc)
+                ] = pc
+
+        #
+        # Build the frontend representation before touching Kubernetes.
+        # This also performs external-port conflict checking.
+        #
+
+        old_frontend = self._build_frontend(previous)
+        new_frontend = self._build_frontend(candidate)
+
+        nftables_conf, init_script = self._compile(
+            candidate
+        )
+
+        digest = hashlib.sha256(
+            (
+                nftables_conf
+                + "\n---INIT---\n"
+                + init_script
+            ).encode("utf-8")
+        ).hexdigest()
+
+        current_digest = (
+            self._get_current_deployment_digest()
+        )
+
+        if current_digest != digest:
+            #
+            # During rollout expose only mappings that exist unchanged
+            # in both revisions.
+            #
+            # New ports will not hit the old gateway revision.
+            # Removed/changed ports are closed before replacing the
+            # firewall.
+            #
+
+            stable_frontend = {
+                key: value
+                for key, value
+                in new_frontend.items()
+                if old_frontend.get(key) == value
+            }
+
+            self._ensure_gateway_services(
+                stable_frontend
+            )
+
+            config_name = (
+                self._ensure_versioned_configmap(
+                    digest=digest,
+                    nftables_conf=nftables_conf,
+                    init_script=init_script
+                )
+            )
+
+            self._ensure_gateway_deployment(
+                config_name=config_name,
+                digest=digest
+            )
+
+            self._wait_for_rollout(digest)
+
+        #
+        # The new gateway revision is ready.
+        # Publish the complete desired frontend.
+        #
+
+        self._ensure_gateway_services(
+            new_frontend
+        )
+
+        self.desired = candidate
+        self.initialized = True
+
+    def _parse_binding(self, pc):
+        try:
+            external, internal = pc.port.split(
+                ":",
+                1
+            )
+        except ValueError:
+            raise ValueError(
+                f"Invalid binding {pc.port!r} for "
+                f"{pc.namespace}/{pc.service}"
+            )
+
+        if "-" in external:
+            try:
+                start_s, end_s = external.split(
+                    "-",
+                    1
+                )
+
+                start = int(start_s)
+                end = int(end_s)
+
+            except ValueError:
+                raise ValueError(
+                    f"Invalid port range "
+                    f"{external!r}"
+                )
+
+            if start > end:
+                raise ValueError(
+                    f"Invalid descending range "
+                    f"{external!r}"
+                )
+
+            #
+            # Range keeps the original destination port:
+            #
+            # 20000-20100:
+            #
+            # We intentionally do not implement arbitrary range remap.
+            #
+
+            if internal != "":
+                raise ValueError(
+                    f"Port range {external!r} "
+                    f"must have an empty internal port"
+                )
+
+            target_port = None
+
+        else:
+            try:
+                start = end = int(external)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid external port "
+                    f"{external!r}"
+                )
+
+            if internal:
+                try:
+                    target_port = int(internal)
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid internal port "
+                        f"{internal!r}"
+                    )
+
+                if not 1 <= target_port <= 65535:
+                    raise ValueError(
+                        f"Invalid internal port "
+                        f"{target_port}"
+                    )
+
+            else:
+                target_port = start
+
+        if start < 1 or end > 65535:
+            raise ValueError(
+                f"Port outside 1-65535: "
+                f"{external}"
+            )
+
+        if (
+            start < self.port_min
+            or end > self.port_max
+        ):
+            raise ValueError(
+                f"{pc.namespace}/{pc.service}: "
+                f"external port {external} is outside "
+                f"router-forwarded range "
+                f"{self.port_min}-{self.port_max}"
+            )
+
+        proto = pc.proto.upper()
+
+        if proto == "ANY":
+            protocols = [
+                "TCP",
+                "UDP",
+            ]
+
+        elif proto in [
+            "TCP",
+            "UDP",
+        ]:
+            protocols = [proto]
+
+        else:
+            raise ValueError(
+                f"Unsupported protocol {proto}"
+            )
+
+        return {
+            "pc": pc,
+            "start": start,
+            "end": end,
+            "external": external,
+            "target_port": target_port,
+            "protocols": protocols,
+        }
+
+    def _build_frontend(self, desired):
+        """
+        Expand desired state to individual MetalLB Service ports.
+
+        key:
+            (protocol, external_port)
+
+        value:
+            (namespace, service, target_port)
+
+        The key must be globally unique for exposed traffic.
+        """
+
+        frontend = {}
+
+        for pc in desired.values():
+            binding = self._parse_binding(pc)
+
+            for protocol in binding["protocols"]:
+                for external_port in range(
+                    binding["start"],
+                    binding["end"] + 1
+                ):
+                    if binding["start"] == binding["end"]:
+                        target_port = (
+                            binding["target_port"]
+                        )
+                    else:
+                        target_port = external_port
+
+                    key = (
+                        protocol,
+                        external_port
+                    )
+
+                    value = (
+                        pc.namespace,
+                        pc.service,
+                        target_port
+                    )
+
+                    if (
+                        key in frontend
+                        and frontend[key] != value
+                    ):
+                        old = frontend[key]
+
+                        raise ValueError(
+                            f"External "
+                            f"{protocol}/{external_port} "
+                            f"conflict: "
+                            f"{old[0]}/{old[1]} "
+                            f"and "
+                            f"{pc.namespace}/{pc.service}"
+                        )
+
+                    frontend[key] = value
+
+        if len(frontend) > self.max_service_ports:
+            raise ValueError(
+                f"PodGateway would create "
+                f"{len(frontend)} Service ports; "
+                f"limit is "
+                f"{self.max_service_ports}. "
+                f"Increase "
+                f"GATEWAY_MAX_SERVICE_PORTS "
+                f"if this is intentional."
+            )
+
+        return frontend
+
+    def _get_service_ip(
+        self,
+        namespace,
+        name,
+        cache
+    ):
+        key = (
+            namespace,
+            name
+        )
+
+        if key in cache:
+            return cache[key]
+
+        service = (
+            self.core.read_namespaced_service(
+                name=name,
+                namespace=namespace
+            )
+        )
+
+        cluster_ip = service.spec.cluster_ip
+
+        if (
+            not cluster_ip
+            or cluster_ip == "None"
+        ):
+            raise ValueError(
+                f"{namespace}/{name} is headless "
+                f"and cannot be used as a "
+                f"PodGateway DNAT target"
+            )
+
+        address = ipaddress.ip_address(
+            cluster_ip
+        )
+
+        if address.version != 4:
+            raise ValueError(
+                f"{namespace}/{name}: "
+                f"IPv6 ClusterIP is currently "
+                f"unsupported: {cluster_ip}"
+            )
+
+        cache[key] = cluster_ip
+
+        return cluster_ip
+
+    def _compile(self, desired):
+        #
+        # Conflict checking and range-size checking.
+        #
+        self._build_frontend(desired)
+
+        service_cache = {}
+        rules = []
+
+        for pc in desired.values():
+            binding = self._parse_binding(pc)
+
+            cluster_ip = self._get_service_ip(
+                pc.namespace,
+                pc.service,
+                service_cache
+            )
+
+            for protocol in binding["protocols"]:
+                rules.append({
+                    "pc": pc,
+                    "protocol": protocol,
+                    "start": binding["start"],
+                    "end": binding["end"],
+                    "target_port":
+                        binding["target_port"],
+                    "cluster_ip": cluster_ip,
+                })
+
+        return (
+            self._build_nftables(rules),
+            self._build_init_script()
+        )
+
+    def _build_nftables(self, rules):
+        nat_rules = []
+        forward_rules = []
+
+        for rule in sorted(
+            rules,
+            key=lambda r: (
+                r["protocol"],
+                r["start"],
+                r["end"],
+                r["pc"].namespace,
+                r["pc"].service,
+            )
+        ):
+            proto = rule[
+                "protocol"
+            ].lower()
+
+            ip = rule["cluster_ip"]
+
+            if (
+                rule["start"]
+                != rule["end"]
+            ):
+                external = (
+                    f'{rule["start"]}-'
+                    f'{rule["end"]}'
+                )
+
+                #
+                # No port remap for a range.
+                #
+
+                nat_rules.append(
+                    f"        "
+                    f"{proto} dport {external} "
+                    f"dnat to {ip}"
+                )
+
+                forward_rules.append(
+                    f"        "
+                    f"ct status dnat "
+                    f"ip daddr {ip} "
+                    f"{proto} dport {external} "
+                    f"ct state new accept"
+                )
+
+            else:
+                external = rule["start"]
+                internal = rule["target_port"]
+
+                nat_rules.append(
+                    f"        "
+                    f"{proto} dport {external} "
+                    f"dnat to {ip}:{internal}"
+                )
+
+                forward_rules.append(
+                    f"        "
+                    f"ct status dnat "
+                    f"ip daddr {ip} "
+                    f"{proto} dport {internal} "
+                    f"ct state new accept"
+                )
+
+        nat_text = "\n".join(nat_rules)
+        forward_text = "\n".join(
+            forward_rules
+        )
+
+        return f"""flush ruleset
+
+table ip pod_gateway_nat {{
+    chain prerouting {{
+        type nat hook prerouting priority dstnat;
+        policy accept;
+
+{nat_text}
+    }}
+
+    chain postrouting {{
+        type nat hook postrouting priority srcnat;
+        policy accept;
+
+        #
+        # Backend replies must come back through this gateway
+        # network namespace so its conntrack state can undo DNAT.
+        #
+        ct status dnat masquerade
+    }}
+}}
+
+table inet pod_gateway_filter {{
+    chain input {{
+        type filter hook input priority filter;
+        policy drop;
+
+        iifname "lo" accept
+
+        ct state invalid drop
+        ct state established,related accept
+    }}
+
+    chain output {{
+        type filter hook output priority filter;
+        policy drop;
+
+        oifname "lo" accept
+
+        ct state established,related accept
+
+        #
+        # Permit locally generated routing errors required for PMTU
+        # and normal IP forwarding behaviour.
+        #
+        ip protocol icmp icmp type {{
+            destination-unreachable,
+            time-exceeded,
+            parameter-problem
+        }} accept
+    }}
+
+    chain forward {{
+        type filter hook forward priority filter;
+        policy drop;
+
+        ct state invalid drop
+        ct state established,related accept
+
+{forward_text}
+    }}
+}}
+"""
+
+    def _build_init_script(self):
+        return """#!/bin/sh
+set -eu
+
+#
+# The gateway routes packets inside its own pod network namespace.
+#
+
+sysctl -w net.ipv4.ip_forward=1
+
+sysctl -w net.ipv4.conf.all.rp_filter=0
+sysctl -w net.ipv4.conf.default.rp_filter=0
+sysctl -w net.ipv4.conf.eth0.rp_filter=0
+
+sysctl -w net.ipv4.conf.all.accept_redirects=0
+sysctl -w net.ipv4.conf.default.accept_redirects=0
+sysctl -w net.ipv4.conf.eth0.accept_redirects=0
+
+sysctl -w net.ipv4.conf.all.send_redirects=0
+sysctl -w net.ipv4.conf.default.send_redirects=0
+sysctl -w net.ipv4.conf.eth0.send_redirects=0
+
+sysctl -w net.ipv4.conf.all.accept_source_route=0
+sysctl -w net.ipv4.conf.default.accept_source_route=0
+sysctl -w net.ipv4.conf.eth0.accept_source_route=0
+
+#
+# Validate the complete ruleset first.
+#
+
+nft --check -f /config/nftables.conf
+
+#
+# nftables applies the file transactionally.
+#
+
+nft -f /config/nftables.conf
+"""
+
+    def _configmap_name(self, digest):
+        prefix = re.sub(
+            r"[^a-z0-9.-]+",
+            "-",
+            self.gateway_config_prefix.lower()
+        ).strip("-.")
+
+        return (
+            f"{prefix[:46]}-"
+            f"{digest[:16]}"
+        )
+
+    def _ensure_versioned_configmap(
+        self,
+        digest,
+        nftables_conf,
+        init_script
+    ):
+        name = self._configmap_name(
+            digest
+        )
+
+        body = {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": name,
+                "namespace": self.namespace,
+                "labels": {
+                    "app.kubernetes.io/name":
+                        self.gateway_deployment,
+                    "app.kubernetes.io/managed-by":
+                        "port-configurator",
+                    "pod-gateway-config": "1",
+                },
+            },
+            "immutable": True,
+            "data": {
+                "nftables.conf":
+                    nftables_conf,
+                "init.sh":
+                    init_script,
+            },
+        }
+
+        try:
+            self.core.create_namespaced_config_map(
+                namespace=self.namespace,
+                body=body
+            )
+
+        except ApiException as e:
+            if e.status != 409:
+                raise
+
+        return name
+
+    def _gateway_labels(self):
+        return {
+            "app.kubernetes.io/name":
+                self.gateway_deployment,
+            "app.kubernetes.io/component":
+                "network-gateway",
+        }
+
+    def _deployment_body(
+        self,
+        config_name,
+        digest
+    ):
+        labels = self._gateway_labels()
+
+        annotations = {
+            self.CONFIG_HASH_ANNOTATION:
+                digest,
+        }
+
+        if self.init_privileged:
+            init_security = {
+                "privileged": True,
+                "runAsUser": 0,
+                "readOnlyRootFilesystem": True,
+                "seccompProfile": {
+                    "type": "RuntimeDefault",
+                },
+            }
+
+        else:
+            init_security = {
+                "privileged": False,
+                "runAsUser": 0,
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "capabilities": {
+                    "drop": ["ALL"],
+                    "add": ["NET_ADMIN"],
+                },
+                "seccompProfile": {
+                    "type": "RuntimeDefault",
+                },
+            }
+
+        if self.strategy == "RollingUpdate":
+            strategy = {
+                "type": "RollingUpdate",
+                "rollingUpdate": {
+                    "maxUnavailable": 0,
+                    "maxSurge": 1,
+                },
+            }
+
+        else:
+            strategy = {
+                "type": "Recreate",
+            }
+
+        return {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+
+            "metadata": {
+                "name":
+                    self.gateway_deployment,
+                "namespace":
+                    self.namespace,
+                "labels":
+                    labels,
+            },
+
+            "spec": {
+                "replicas": 1,
+
+                "revisionHistoryLimit": 3,
+
+                "strategy":
+                    strategy,
+
+                "selector": {
+                    "matchLabels":
+                        labels,
+                },
+
+                "template": {
+                    "metadata": {
+                        "labels":
+                            labels,
+
+                        "annotations":
+                            annotations,
+                    },
+
+                    "spec": {
+                        #
+                        # The gateway itself gets no Kubernetes token.
+                        #
+                        "automountServiceAccountToken":
+                            False,
+
+                        "enableServiceLinks":
+                            False,
+
+                        "nodeSelector":
+                            self.node_selector,
+
+                        "terminationGracePeriodSeconds":
+                            1,
+
+                        "initContainers": [
+                            {
+                                "name":
+                                    "network-init",
+
+                                "image":
+                                    self.init_image,
+
+                                "imagePullPolicy":
+                                    "IfNotPresent",
+
+                                "command": [
+                                    "/bin/sh",
+                                    "/config/init.sh",
+                                ],
+
+                                "securityContext":
+                                    init_security,
+
+                                "volumeMounts": [
+                                    {
+                                        "name":
+                                            "gateway-config",
+                                        "mountPath":
+                                            "/config",
+                                        "readOnly":
+                                            True,
+                                    }
+                                ],
+
+                                "resources": {
+                                    "requests": {
+                                        "cpu":
+                                            "5m",
+                                        "memory":
+                                            "8Mi",
+                                    },
+
+                                    "limits": {
+                                        "cpu":
+                                            "100m",
+                                        "memory":
+                                            "64Mi",
+                                    },
+                                },
+                            }
+                        ],
+
+                        "containers": [
+                            {
+                                "name":
+                                    "gateway",
+
+                                "image":
+                                    self.pause_image,
+
+                                "imagePullPolicy":
+                                    "IfNotPresent",
+
+                                "securityContext": {
+                                    "runAsUser":
+                                        65534,
+
+                                    "runAsGroup":
+                                        65534,
+
+                                    "runAsNonRoot":
+                                        True,
+
+                                    "allowPrivilegeEscalation":
+                                        False,
+
+                                    "readOnlyRootFilesystem":
+                                        True,
+
+                                    "capabilities": {
+                                        "drop":
+                                            ["ALL"],
+                                    },
+
+                                    "seccompProfile": {
+                                        "type":
+                                            "RuntimeDefault",
+                                    },
+                                },
+
+                                "resources": {
+                                    "requests": {
+                                        "cpu":
+                                            "1m",
+                                        "memory":
+                                            "4Mi",
+                                    },
+
+                                    "limits": {
+                                        "cpu":
+                                            "20m",
+                                        "memory":
+                                            "16Mi",
+                                    },
+                                },
+                            }
+                        ],
+
+                        "volumes": [
+                            {
+                                "name":
+                                    "gateway-config",
+
+                                "configMap": {
+                                    "name":
+                                        config_name,
+
+                                    "defaultMode":
+                                        365,
+                                },
+                            }
+                        ],
+                    },
+                },
+            },
+        }
+
+    def _get_current_deployment_digest(self):
+        try:
+            deployment = (
+                self.apps.read_namespaced_deployment(
+                    name=self.gateway_deployment,
+                    namespace=self.namespace
+                )
+            )
+
+        except ApiException as e:
+            if e.status == 404:
+                return None
+
+            raise
+
+        annotations = (
+            deployment
+            .spec
+            .template
+            .metadata
+            .annotations
+            or {}
+        )
+
+        return annotations.get(
+            self.CONFIG_HASH_ANNOTATION
+        )
+
+    def _ensure_gateway_deployment(
+        self,
+        config_name,
+        digest
+    ):
+        body = self._deployment_body(
+            config_name,
+            digest
+        )
+
+        try:
+            self.apps.read_namespaced_deployment(
+                name=self.gateway_deployment,
+                namespace=self.namespace
+            )
+
+        except ApiException as e:
+            if e.status != 404:
+                raise
+
+            self.apps.create_namespaced_deployment(
+                namespace=self.namespace,
+                body=body
+            )
+
+            print(
+                f"Created gateway Deployment "
+                f"{self.namespace}/"
+                f"{self.gateway_deployment} "
+                f"revision {digest[:12]}"
+            )
+
+            return
+
+        self.apps.patch_namespaced_deployment(
+            name=self.gateway_deployment,
+            namespace=self.namespace,
+            body=body
+        )
+
+        print(
+            f"Updated gateway Deployment "
+            f"{self.namespace}/"
+            f"{self.gateway_deployment} "
+            f"revision {digest[:12]}"
+        )
+
+    def _wait_for_rollout(self, digest):
+        for _ in range(
+            self.rollout_timeout
+        ):
+            deployment = (
+                self.apps.read_namespaced_deployment(
+                    name=self.gateway_deployment,
+                    namespace=self.namespace
+                )
+            )
+
+            status = deployment.status
+
+            observed = (
+                status.observed_generation
+                or 0
+            )
+
+            generation = (
+                deployment.metadata.generation
+                or 0
+            )
+
+            updated = (
+                status.updated_replicas
+                or 0
+            )
+
+            available = (
+                status.available_replicas
+                or 0
+            )
+
+            replicas = (
+                status.replicas
+                or 0
+            )
+
+            current_digest = (
+                deployment
+                .spec
+                .template
+                .metadata
+                .annotations
+                or {}
+            ).get(
+                self.CONFIG_HASH_ANNOTATION
+            )
+
+            if (
+                current_digest == digest
+                and observed >= generation
+                and updated == 1
+                and available == 1
+                and replicas == 1
+            ):
+                return
+
+            sleep(1)
+
+        raise TimeoutError(
+            f"Gateway Deployment rollout "
+            f"did not complete within "
+            f"{self.rollout_timeout}s"
+        )
+
+    def _service_name(self, protocol):
+        return (
+            f"{self.gateway_service_prefix}-"
+            f"{protocol.lower()}"
+        )
+
+    def _metallb_annotations(self):
+        annotations = {
+            "metallb.io/loadBalancerIPs":
+                self.load_balancer_ip,
+
+            "metallb.io/allow-shared-ip":
+                self.shared_ip_key,
+        }
+
+        if self.metallb_address_pool:
+            annotations[
+                "metallb.io/address-pool"
+            ] = self.metallb_address_pool
+
+        return annotations
+
+    def _ensure_gateway_services(
+        self,
+        frontend
+    ):
+        """
+        Create one LoadBalancer Service for TCP and one for UDP.
+
+        Both request the same MetalLB IP and select the exact same
+        gateway pods, so MetalLB can share the IP between them.
+        """
+
+        labels = self._gateway_labels()
+
+        for protocol in [
+            "TCP",
+            "UDP",
+        ]:
+            service_name = (
+                self._service_name(protocol)
+            )
+
+            external_ports = sorted(
+                port
+                for proto, port
+                in frontend.keys()
+                if proto == protocol
+            )
+
+            if not external_ports:
+                try:
+                    self.core.delete_namespaced_service(
+                        name=service_name,
+                        namespace=self.namespace
+                    )
+
+                except ApiException as e:
+                    if e.status != 404:
+                        raise
+
+                continue
+
+            service_ports = [
+                {
+                    "name":
+                        f"p-{port}",
+
+                    "protocol":
+                        protocol,
+
+                    "port":
+                        port,
+
+                    #
+                    # The gateway nftables rules listen at the same
+                    # external port in the pod network namespace.
+                    #
+                    "targetPort":
+                        port,
+                }
+
+                for port in external_ports
+            ]
+
+            annotations = (
+                self._metallb_annotations()
+            )
+
+            body = {
+                "apiVersion": "v1",
+                "kind": "Service",
+
+                "metadata": {
+                    "name":
+                        service_name,
+
+                    "namespace":
+                        self.namespace,
+
+                    "labels": {
+                        "app.kubernetes.io/name":
+                            self.gateway_deployment,
+
+                        "app.kubernetes.io/component":
+                            "network-gateway",
+
+                        "app.kubernetes.io/managed-by":
+                            "port-configurator",
+                    },
+
+                    "annotations":
+                        annotations,
+                },
+
+                "spec": {
+                    "type":
+                        "LoadBalancer",
+
+                    "allocateLoadBalancerNodePorts":
+                        self.allocate_node_ports,
+
+                    "externalTrafficPolicy":
+                        self.external_traffic_policy,
+
+                    "selector":
+                        labels,
+
+                    "ports":
+                        service_ports,
+                },
+            }
+
+            try:
+                current = (
+                    self.core
+                    .read_namespaced_service(
+                        name=service_name,
+                        namespace=self.namespace
+                    )
+                )
+
+            except ApiException as e:
+                if e.status != 404:
+                    raise
+
+                self.core.create_namespaced_service(
+                    namespace=self.namespace,
+                    body=body
+                )
+
+                print(
+                    f"Created gateway Service "
+                    f"{self.namespace}/"
+                    f"{service_name}"
+                )
+
+                continue
+
+            #
+            # Preserve immutable Service fields such as clusterIP,
+            # but replace the managed fields.
+            #
+
+            current_annotations = (
+                current.metadata.annotations
+                or {}
+            )
+
+            current_annotations.update(
+                annotations
+            )
+
+            #
+            # Remove a stale address-pool annotation if configuration
+            # no longer specifies one.
+            #
+            if not self.metallb_address_pool:
+                current_annotations.pop(
+                    "metallb.io/address-pool",
+                    None
+                )
+
+            current.metadata.annotations = (
+                current_annotations
+            )
+
+            current.spec.type = (
+                "LoadBalancer"
+            )
+
+            current.spec.selector = labels
+
+            current.spec.external_traffic_policy = (
+                self.external_traffic_policy
+            )
+
+            current.spec.allocate_load_balancer_node_ports = (
+                self.allocate_node_ports
+            )
+
+            current.spec.ports = [
+                ks.client.V1ServicePort(
+                    name=f"p-{port}",
+                    protocol=protocol,
+                    port=port,
+                    target_port=port
+                )
+                for port in external_ports
+            ]
+
+            if (
+                self.external_traffic_policy
+                != "Local"
+            ):
+                current.spec.health_check_node_port = (
+                    None
+                )
+
+            self.core.replace_namespaced_service(
+                name=service_name,
+                namespace=self.namespace,
+                body=current
+            )

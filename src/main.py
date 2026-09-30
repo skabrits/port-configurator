@@ -38,13 +38,26 @@ class PortConfigs:
     def add_port_config(self, port_config):
         self.proto_port_configs[port_config.proto][hash(port_config)] = port_config
 
-    def remove_ports_by_service(self, service):
-        redundant_port_configs = {h: p for h, p in self.get_port_configs().items() if p.service == service}
-        for h in redundant_port_configs.keys():
-            self.proto_port_configs[redundant_port_configs[h].proto].pop(h)
+    def remove_ports_by_service(self, service, namespace=None):
+        redundant_port_configs = {
+            h: p
+            for h, p in self.get_port_configs().items()
+            if p.service == service
+               and (namespace is None or p.namespace == namespace)
+        }
 
-    def get_ports_by_service(self, service):
-        return {h: p for h, p in self.get_port_configs().items() if p.service == service}
+        for h in redundant_port_configs.keys():
+            self.proto_port_configs[
+                redundant_port_configs[h].proto
+            ].pop(h)
+
+    def get_ports_by_service(self, service, namespace=None):
+        return {
+            h: p
+            for h, p in self.get_port_configs().items()
+            if p.service == service
+               and (namespace is None or p.namespace == namespace)
+        }
 
     def get_ports_by_proto(self, proto):
         return [p.port.split(":")[0] for p in self.get_port_configs().values() if p.proto == proto]
@@ -76,7 +89,10 @@ class PortConfigs:
 
     def add_from_svc(self, svc):
         proto_ports = dict()
-        if svc.metadata.annotations.get(port_provider.auto_annotation_key):
+
+        annotations = svc.metadata.annotations or {}
+
+        if annotations.get(port_provider.auto_annotation_key):
             for port_config in svc.spec.ports:
                 proto = port_config.protocol
 
@@ -89,7 +105,9 @@ class PortConfigs:
                 self.add_port_from_data(f'{port_config.port}:{port_config.port}', proto, svc)
         else:
             for proto in port_provider.protos:
-                proto_ports[proto] = svc.metadata.annotations.get(port_provider.annotation_keys[proto])
+                proto_ports[proto] = annotations.get(
+                    port_provider.annotation_keys[proto]
+                )
             if svc.metadata.annotations and any(proto_ports.values()):
                 for proto in proto_ports.keys():
                     if proto_ports[proto]:
@@ -171,10 +189,16 @@ def fetch_service(svc):
     global CONFIGS
     TMP_CONFIGS = PortConfigs()
     TMP_CONFIGS.add_from_svc(svc)
-    old_port_configs = CONFIGS.get_ports_by_service(svc.metadata.name)
+    old_port_configs = CONFIGS.get_ports_by_service(
+        svc.metadata.name,
+        svc.metadata.namespace
+    )
     new_port_configs = TMP_CONFIGS.get_port_configs()
     port_provider.patch_ports(new_port_configs, old_port_configs)
-    CONFIGS.remove_ports_by_service(svc.metadata.name)
+    CONFIGS.remove_ports_by_service(
+        svc.metadata.name,
+        svc.metadata.namespace
+    )
     CONFIGS.add_from_pcs(TMP_CONFIGS)
     CONFIGS.generate_config_maps()
     lock_file.unlock()
@@ -183,10 +207,16 @@ def fetch_service(svc):
 def delete_service(svc):
     lock_file.lock()
     global CONFIGS
-    old_port_configs = CONFIGS.get_ports_by_service(svc.metadata.name)
+    old_port_configs = CONFIGS.get_ports_by_service(
+        svc.metadata.name,
+        svc.metadata.namespace
+    )
     new_port_configs = dict()
     port_provider.patch_ports(new_port_configs, old_port_configs)
-    CONFIGS.remove_ports_by_service(svc.metadata.name)
+    CONFIGS.remove_ports_by_service(
+        svc.metadata.name,
+        svc.metadata.namespace
+    )
     CONFIGS.generate_config_maps()
     lock_file.unlock()
 

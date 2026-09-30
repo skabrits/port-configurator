@@ -7,10 +7,11 @@ provider:
 
 # Supported providers:
 #
-# | Provider            | Protocols |  Class   |  Default BASE_NAME  | Notes                                                                                      |
-# |:--------------------|:---------:|:--------:|:-------------------:|:-------------------------------------------------------------------------------------------|
-# | Ingress-Nginx       | TCP, UDP  |  Nginx   | ingress-nginx-ports | port-forwarding includes managing configmaps, deployment's and service's ports for ingress |
-# | TP-link Archer C80  |    ANY    |  Router  |    tplink-ports     | port-forwarding is done via web interface (Selenium)                                       |
+# | Provider             | Protocols |  Class     |  Default BASE_NAME  | Notes                                                                                      |
+# |:---------------------|:---------:|:----------:|:-------------------:|:-------------------------------------------------------------------------------------------|
+# | Ingress-Nginx        | TCP, UDP  |  Nginx     | ingress-nginx-ports | port-forwarding includes managing configmaps, deployment's and service's ports for ingress |
+# | TP-link Archer C80   |    ANY    |  Router    |    tplink-ports     | port-forwarding is done via web interface (Selenium)                                       |
+# | MetalLB Pod Gateway  |    ANY    | PodGateway |      pod-ports      | MetalLB LoadBalancer frontend + nftables gateway pod                                       |
 
 image:
   repository: skabrits/port-configurator
@@ -37,6 +38,16 @@ securityContext: {}
 envs: {}
   # BASE_NAME: ingress-nginx-ports
   # INGRESS_DEPLOYMENT: my-release-ingress-nginx-controller
+  #
+  # PodGateway example:
+  #
+  # BASE_NAME: pod-ports
+  # GATEWAY_LOAD_BALANCER_IP: 192.168.0.254
+  # GATEWAY_PORT_MIN: "20000"
+  # GATEWAY_PORT_MAX: "60000"
+  # GATEWAY_EXTERNAL_TRAFFIC_POLICY: Local
+  # GATEWAY_ALLOCATE_NODE_PORTS: "0"
+  # GATEWAY_INIT_IMAGE: skabrits/port-gateway-init:0.1.0
 
 resources: {}
   # limits:
