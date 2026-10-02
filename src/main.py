@@ -170,6 +170,8 @@ def setup():
     global CONFIGS
     v1 = ks.client.CoreV1Api()
 
+    port_provider.setup()
+
     NEW_CONFIGS = PortConfigs()
 
     services = v1.list_service_for_all_namespaces(label_selector=port_provider.label_selector)
@@ -182,8 +184,6 @@ def setup():
     port_provider.patch_ports(NEW_CONFIGS.get_port_configs(), CONFIGS.get_port_configs())
 
     CONFIGS = NEW_CONFIGS
-
-    port_provider.setup()
 
 
 def fetch_service(svc):
