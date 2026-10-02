@@ -40,6 +40,9 @@ class PortProvider:
     def patch_ports(self, new_port_configs, old_port_configs):
         pass
 
+    def setup(self):
+        pass
+
 
 class Router (PortProvider):
     def __init__(self, password=None, host="192.168.0.1", router_proto="http"):
@@ -343,7 +346,7 @@ class PodGateway(PortProvider):
 
     def __init__(self):
         self.base_name = os.getenv("BASE_NAME", "pod-ports")
-        super().__init__(protos=["TCP", "UDP", "ANY"])
+        super().__init__(protos=["ANY"])
 
         self.requires_ip = False
         self.allows_port_range = True
@@ -496,8 +499,8 @@ class PodGateway(PortProvider):
             ) == "1"
         )
 
-        self.core = ks.client.CoreV1Api()
-        self.apps = ks.client.AppsV1Api()
+        self.core = None
+        self.apps = None
 
         #
         # Full desired state.
@@ -508,6 +511,10 @@ class PodGateway(PortProvider):
 
         self.desired = {}
         self.initialized = False
+
+    def setup(self):
+        self.core = ks.client.CoreV1Api()
+        self.apps = ks.client.AppsV1Api()
 
     @staticmethod
     def _config_key(pc):

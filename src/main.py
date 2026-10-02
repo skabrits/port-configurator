@@ -183,6 +183,8 @@ def setup():
 
     CONFIGS = NEW_CONFIGS
 
+    port_provider.setup()
+
 
 def fetch_service(svc):
     lock_file.lock()
