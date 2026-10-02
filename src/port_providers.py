@@ -1526,16 +1526,16 @@ nft -f /config/nftables.conf
 
     def _metallb_annotations(self):
         annotations = {
-            "metallb.io/loadBalancerIPs":
+            "metallb.universe.tf/loadBalancerIPs":
                 self.load_balancer_ip,
 
-            "metallb.io/allow-shared-ip":
+            "metallb.universe.tf/allow-shared-ip":
                 self.shared_ip_key,
         }
 
         if self.metallb_address_pool:
             annotations[
-                "metallb.io/address-pool"
+                "metallb.universe.tf/address-pool"
             ] = self.metallb_address_pool
 
         return annotations
@@ -1697,7 +1697,7 @@ nft -f /config/nftables.conf
             #
             if not self.metallb_address_pool:
                 current_annotations.pop(
-                    "metallb.io/address-pool",
+                    "metallb.universe.tf/address-pool",
                     None
                 )
 
